@@ -4,12 +4,8 @@ import { AgentConfig } from '../../../agent/AgentConfig'
 import { IndySdkError } from '../../../error'
 import { inject, injectable } from '../../../plugins'
 import { isIndyError } from '../../../utils/indyError'
-import {
-  resourceRegistry,
-  indySchemaIdFromSchemaResource,
-  indyCredentialDefinitionIdFromCredentialDefinitionResource,
-} from '../../ledger/cheqd/cheqdIndyUtils'
 import { GenericIndyLedgerService } from '../../ledger/models/IndyLedgerService'
+import { CheqdResourceService } from '../../ledger/services/CheqdResourceService'
 
 @injectable()
 export class IndyVerifierService {
@@ -18,13 +14,14 @@ export class IndyVerifierService {
 
   public constructor(
     agentConfig: AgentConfig,
-    @inject(GenericIndyLedgerService) ledgerService: GenericIndyLedgerService
+    @inject(GenericIndyLedgerService) ledgerService: GenericIndyLedgerService,
+    private cheqdResourceService: CheqdResourceService
   ) {
     this.indy = agentConfig.agentDependencies.indy
     this.ledgerService = ledgerService
   }
 
-  private getIndyProofRequestFromCheqdProofRequest(proofRequest: Indy.IndyProofRequest) {
+  private async getIndyProofRequestFromCheqdProofRequest(proofRequest: Indy.IndyProofRequest) {
     const requestedAttributes = {} as Indy.IndyProofRequest['requested_attributes']
     const requestedPredicates = {} as Indy.IndyProofRequest['requested_predicates']
 
@@ -40,15 +37,16 @@ export class IndyVerifierService {
         const newRestriction = { ...restriction }
 
         if (typeof restriction.schema_id === 'string') {
-          const schemaResource = resourceRegistry.schemas[restriction.schema_id]
-          if (!schemaResource) throw new Error('no schema found')
-          newRestriction.schema_id = indySchemaIdFromSchemaResource(schemaResource)
+          const indySchemaId = await this.cheqdResourceService.indySchemaIdFromCheqdSchemaId(restriction.schema_id)
+          newRestriction.schema_id = indySchemaId
         }
 
         if (typeof restriction.cred_def_id === 'string') {
-          const credDefResource = resourceRegistry.credentialDefinitions[restriction.cred_def_id]
-          if (!credDefResource) throw new Error('no cred def found')
-          newRestriction.cred_def_id = indyCredentialDefinitionIdFromCredentialDefinitionResource(credDefResource)
+          const indyCredDefId =
+            await this.cheqdResourceService.indyCredentialDefinitionIdFromCheqdCredentialDefinitionId(
+              restriction.cred_def_id
+            )
+          newRestriction.cred_def_id = indyCredDefId
         }
 
         restrictions.push(newRestriction)
@@ -72,15 +70,16 @@ export class IndyVerifierService {
         const newRestriction = { ...restriction }
 
         if (typeof restriction.schema_id === 'string') {
-          const schemaResource = resourceRegistry.schemas[restriction.schema_id]
-          if (!schemaResource) throw new Error('no schema found')
-          newRestriction.schema_id = indySchemaIdFromSchemaResource(schemaResource)
+          const indySchemaId = await this.cheqdResourceService.indySchemaIdFromCheqdSchemaId(restriction.schema_id)
+          newRestriction.schema_id = indySchemaId
         }
 
         if (typeof restriction.cred_def_id === 'string') {
-          const credDefResource = resourceRegistry.credentialDefinitions[restriction.cred_def_id]
-          if (!credDefResource) throw new Error('no cred def found')
-          newRestriction.cred_def_id = indyCredentialDefinitionIdFromCredentialDefinitionResource(credDefResource)
+          const indyCredDefId =
+            await this.cheqdResourceService.indyCredentialDefinitionIdFromCheqdCredentialDefinitionId(
+              restriction.cred_def_id
+            )
+          newRestriction.cred_def_id = indyCredDefId
         }
 
         restrictions.push(newRestriction)
@@ -110,35 +109,34 @@ export class IndyVerifierService {
     try {
       const { revocationRegistryDefinitions, revocationRegistryStates } = await this.getRevocationRegistries(proof)
 
-      const request = this.getIndyProofRequestFromCheqdProofRequest(proofRequest)
+      const request = await this.getIndyProofRequestFromCheqdProofRequest(proofRequest)
       const idMapping: { [id: string]: string } = {}
 
-      const goodSchemas = Object.entries(schemas)
-        .map(([schemaId, schema]) => {
-          const schemaResource = resourceRegistry.schemas[schemaId]
-          if (!schemaResource) throw new Error('no schema found')
-          const indySchemaId = indySchemaIdFromSchemaResource(schemaResource)
+      const goodSchemas = (
+        await Promise.all(
+          Object.entries(schemas).map(async ([schemaId, schema]) => {
+            const indySchemaId = await this.cheqdResourceService.indySchemaIdFromCheqdSchemaId(schemaId)
 
-          idMapping[schemaId] = indySchemaId
-          return [indySchemaId, { ...schema, id: indySchemaId }] as const
-        })
-        .reduce((acc, [schemaId, schema]) => ({ ...acc, [schemaId]: schema }), {})
+            idMapping[schemaId] = indySchemaId
+            return [indySchemaId, { ...schema, id: indySchemaId }] as const
+          })
+        )
+      ).reduce((acc, [schemaId, schema]) => ({ ...acc, [schemaId]: schema }), {})
 
-      const goodCredDefs = Object.entries(credentialDefinitions)
-        .map(([credDefId, credDef]) => {
-          const credDefResource = resourceRegistry.credentialDefinitions[credDefId]
-          if (!credDefResource) throw new Error('no credential definition found')
-          const indyCredDefId = indyCredentialDefinitionIdFromCredentialDefinitionResource(credDefResource)
+      const goodCredDefs = (
+        await Promise.all(
+          Object.entries(credentialDefinitions).map(async ([credDefId, credDef]) => {
+            const indyCredDefId =
+              await this.cheqdResourceService.indyCredentialDefinitionIdFromCheqdCredentialDefinitionId(credDefId)
 
-          idMapping[credDefId] = indyCredDefId
-          const schemaResource = resourceRegistry.schemas[credDef.schemaId]
-          if (!schemaResource) throw new Error('no schema found')
-          const schemaId = indySchemaIdFromSchemaResource(schemaResource)
-          idMapping[credDef.schemaId] = schemaId
+            idMapping[credDefId] = indyCredDefId
+            const indySchemaId = await this.cheqdResourceService.indySchemaIdFromCheqdSchemaId(credDef.schemaId)
+            idMapping[credDef.schemaId] = indySchemaId
 
-          return [indyCredDefId, { ...credDef, id: indyCredDefId, schemaId }] as const
-        })
-        .reduce((acc, [schemaId, schema]) => ({ ...acc, [schemaId]: schema }), {})
+            return [indyCredDefId, { ...credDef, id: indyCredDefId, schemaId: indySchemaId }] as const
+          })
+        )
+      ).reduce((acc, [schemaId, schema]) => ({ ...acc, [schemaId]: schema }), {})
 
       const goodProof = {
         ...proof,

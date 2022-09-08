@@ -17,11 +17,7 @@ import { IndySdkError } from '../../../error/IndySdkError'
 import { injectable } from '../../../plugins'
 import { isIndyError } from '../../../utils/indyError'
 import { IndyWallet } from '../../../wallet/IndyWallet'
-import {
-  indyCredentialDefinitionIdFromCredentialDefinitionResource,
-  indySchemaIdFromSchemaResource,
-  resourceRegistry,
-} from '../../ledger/cheqd/cheqdIndyUtils'
+import { CheqdResourceService } from '../../ledger/services/CheqdResourceService'
 
 import { IndyUtilitiesService } from './IndyUtilitiesService'
 
@@ -32,7 +28,12 @@ export class IndyIssuerService {
   private indyUtilitiesService: IndyUtilitiesService
   private fileSystem: FileSystem
 
-  public constructor(agentConfig: AgentConfig, wallet: IndyWallet, indyUtilitiesService: IndyUtilitiesService) {
+  public constructor(
+    agentConfig: AgentConfig,
+    wallet: IndyWallet,
+    indyUtilitiesService: IndyUtilitiesService,
+    private cheqdResourceService: CheqdResourceService
+  ) {
     this.indy = agentConfig.agentDependencies.indy
     this.wallet = wallet
     this.indyUtilitiesService = indyUtilitiesService
@@ -91,20 +92,17 @@ export class IndyIssuerService {
    * @returns The created credential offer
    */
   public async createCredentialOffer(credentialDefinitionId: CredDefId): Promise<Indy.CredOffer> {
-    const resource = resourceRegistry.credentialDefinitions[credentialDefinitionId]
-
-    if (!resource) {
-      throw new Error('Credential definition not found')
-    }
-
-    const credDefId = indyCredentialDefinitionIdFromCredentialDefinitionResource(resource)
+    const credDefResource = await this.cheqdResourceService.getCredentialDefinitionResource(credentialDefinitionId)
+    const indyCredDefId = await this.cheqdResourceService.indyCredentialDefinitionIdFromCheqdCredentialDefinitionId(
+      credentialDefinitionId
+    )
     try {
-      const offer = await this.indy.issuerCreateCredentialOffer(this.wallet.handle, credDefId)
+      const offer = await this.indy.issuerCreateCredentialOffer(this.wallet.handle, indyCredDefId)
 
       return {
         ...offer,
         cred_def_id: credentialDefinitionId,
-        schema_id: resource.data.AnonCredsCredDef.schemaId,
+        schema_id: credDefResource.data.AnonCredsCredDef.schemaId,
       }
     } catch (error) {
       throw isIndyError(error) ? new IndySdkError(error) : error
@@ -123,21 +121,25 @@ export class IndyIssuerService {
     revocationRegistryId,
     tailsFilePath,
   }: CreateCredentialOptions): Promise<[Cred, CredRevocId]> {
-    const credentialDefinitionResource = resourceRegistry.credentialDefinitions[credentialRequest.cred_def_id]
-    const schemaResource = resourceRegistry.schemas[credentialDefinitionResource.data.AnonCredsCredDef.schemaId]
-
-    if (!credentialDefinitionResource) throw new Error('no credential definition found')
-    if (!schemaResource) throw new Error('no credential definition found')
+    const credentialDefinitionResource = await this.cheqdResourceService.getCredentialDefinitionResource(
+      credentialRequest.cred_def_id
+    )
+    const indySchemaId = await this.cheqdResourceService.indySchemaIdFromCheqdSchemaId(
+      credentialDefinitionResource.data.AnonCredsCredDef.schemaId
+    )
+    const indyCredDefId = await this.cheqdResourceService.indyCredentialDefinitionIdFromCheqdCredentialDefinitionId(
+      credentialRequest.cred_def_id
+    )
 
     const offer: Indy.CredOffer = {
       ...credentialOffer,
-      cred_def_id: indyCredentialDefinitionIdFromCredentialDefinitionResource(credentialDefinitionResource),
-      schema_id: indySchemaIdFromSchemaResource(schemaResource),
+      cred_def_id: indyCredDefId,
+      schema_id: indySchemaId,
     }
 
     const request: Indy.CredReq = {
       ...credentialRequest,
-      cred_def_id: indyCredentialDefinitionIdFromCredentialDefinitionResource(credentialDefinitionResource),
+      cred_def_id: indyCredDefId,
     }
 
     try {

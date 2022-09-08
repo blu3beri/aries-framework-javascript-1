@@ -9,6 +9,7 @@ import { Wallet } from '../../wallet/Wallet'
 
 import { GenericIndyLedgerService } from './models/IndyLedgerService'
 import { CheqdLedgerService, IndyPoolService, IndyLedgerService } from './services'
+import { CheqdResourceService } from './services/CheqdResourceService'
 
 @module()
 @injectable()
@@ -99,6 +100,7 @@ export class LedgerModule {
 
     // Services
     dependencyManager.registerSingleton(GenericIndyLedgerService, CheqdLedgerService)
+    dependencyManager.registerSingleton(CheqdResourceService)
     dependencyManager.registerSingleton(IndyLedgerService)
 
     // TODO-CHEQD: do we need this?

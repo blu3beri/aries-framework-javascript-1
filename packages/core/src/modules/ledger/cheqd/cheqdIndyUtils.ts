@@ -2,10 +2,12 @@ import type { CredDef, Schema } from 'indy-sdk'
 
 import { IndyCredentialUtils } from '../../credentials/formats/indy/IndyCredentialUtils'
 
-export const resourceRegistry: {
+export interface LocalResourceRegistry {
   schemas: { [resourceId: string]: SchemaResource }
   credentialDefinitions: { [resourceId: string]: CredentialDefinitionResource }
-} = {
+}
+
+export const resourceRegistry: LocalResourceRegistry = {
   schemas: {},
   credentialDefinitions: {},
 }
@@ -98,20 +100,4 @@ export function indySchemaIdFromSchemaResource(schemaResource: SchemaResource): 
   const schemaId = `${schemaResource._indyData.did}:2:${schemaResource.header.name}:1.0`
 
   return schemaId
-}
-
-export function indyCredentialDefinitionIdFromCredentialDefinitionResource(
-  credentialDefinitionResource: CredentialDefinitionResource
-): string {
-  const schemaResource = resourceRegistry.schemas[credentialDefinitionResource.data.AnonCredsCredDef.schemaId]
-
-  if (!schemaResource) {
-    throw new Error(`Schema with id ${credentialDefinitionResource.data.AnonCredsCredDef.schemaId} not found`)
-  }
-
-  const schemaId = indySchemaIdFromSchemaResource(schemaResource)
-  const txnId = IndyCredentialUtils.encode(schemaId).substring(0, 6)
-
-  const credentialDefinitionId = `${credentialDefinitionResource._indyData.did}:3:CL:${txnId}:${credentialDefinitionResource.data.AnonCredsCredDef.tag}`
-  return credentialDefinitionId
 }

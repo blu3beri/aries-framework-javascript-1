@@ -27,15 +27,13 @@ import { injectable } from '../../../plugins'
 import { uuid } from '../../../utils/uuid'
 import { IndyWallet } from '../../../wallet/IndyWallet'
 import { Key } from '../../dids'
-import { IndyIssuerService } from '../../indy/services/IndyIssuerService'
 import {
   indyCredentialDefinitionFromCredentialDefinitionResource,
   indySchemaFromSchemaResource,
-  indySchemaIdFromSchemaResource,
   resourceRegistry,
 } from '../cheqd/cheqdIndyUtils'
 
-import { IndyPoolService } from './IndyPoolService'
+import { CheqdResourceService } from './CheqdResourceService'
 
 // --------------
 
@@ -53,25 +51,15 @@ export type IdentifierPayload = Partial<MsgCreateDidPayload> | Partial<MsgUpdate
 export class CheqdLedgerService implements GenericIndyLedgerService {
   private wallet: IndyWallet
   private indy: typeof Indy
-  private logger: Logger
-
-  private indyIssuer: IndyIssuerService
-  private indyPoolService: IndyPoolService
+  private cheqdResourceService: CheqdResourceService
 
   private sdk?: CheqdSDK
   private fee?: DidStdFee
 
-  public constructor(
-    wallet: IndyWallet,
-    agentConfig: AgentConfig,
-    indyIssuer: IndyIssuerService,
-    indyPoolService: IndyPoolService
-  ) {
+  public constructor(wallet: IndyWallet, agentConfig: AgentConfig, cheqdResourceService: CheqdResourceService) {
     this.wallet = wallet
     this.indy = agentConfig.agentDependencies.indy
-    this.logger = agentConfig.logger
-    this.indyIssuer = indyIssuer
-    this.indyPoolService = indyPoolService
+    this.cheqdResourceService = cheqdResourceService
   }
 
   private async getCheqdSDK(fee?: DidStdFee): Promise<CheqdSDK> {
@@ -197,13 +185,8 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     return indySchemaFromSchemaResource(resource)
   }
 
-  // TODO-CHEQD: integrate with cheqd-sdk
   public async getSchema(schemaId: string): Promise<Indy.Schema> {
-    const resource = resourceRegistry.schemas[schemaId]
-
-    if (!resource) {
-      throw new AriesFrameworkError(`Schema with id ${schemaId} not found`)
-    }
+    const resource = await this.cheqdResourceService.getSchemaResource(schemaId)
 
     return indySchemaFromSchemaResource(resource)
   }
@@ -221,14 +204,11 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     const verkey = await this.indy.keyForLocalDid(this.wallet.handle, indyDid)
     const cheqdDidIdentifier = Key.fromPublicKeyBase58(verkey, KeyType.Ed25519).fingerprint.substring(0, 32)
 
-    const schemaResource = resourceRegistry.schemas[schema.id]
-    if (!schemaResource) {
-      throw new AriesFrameworkError(`Schema with id ${schema.id} not found`)
-    }
+    const indySchemaId = await this.cheqdResourceService.indySchemaIdFromCheqdSchemaId(schema.id)
 
     const indySchema: Indy.Schema = {
       ...schema,
-      id: indySchemaIdFromSchemaResource(schemaResource),
+      id: indySchemaId,
     }
 
     const [credDefId, credentialDefinition] = await this.indy.issuerCreateAndStoreCredentialDef(
@@ -273,39 +253,25 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     return indyCredentialDefinitionFromCredentialDefinitionResource(resource)
   }
 
-  // TODO-CHEQD: integrate with cheqd sdk
   public async getCredentialDefinition(credentialDefinitionId: string): Promise<Indy.CredDef> {
-    const resource = resourceRegistry.credentialDefinitions[credentialDefinitionId]
-
-    if (!resource) {
-      throw new AriesFrameworkError(`Credential definition with id ${credentialDefinitionId} not found`)
-    }
+    const resource = await this.cheqdResourceService.getCredentialDefinitionResource(credentialDefinitionId)
 
     return indyCredentialDefinitionFromCredentialDefinitionResource(resource)
   }
 
-  public getRevocationRegistryDefinition(
-    revocationRegistryDefinitionId: string
-  ): Promise<ParseRevocationRegistryDefinitionTemplate> {
+  public getRevocationRegistryDefinition(): Promise<ParseRevocationRegistryDefinitionTemplate> {
     throw new Error('Method not implemented.')
   }
 
-  public getEndpointsForDid(did: string): Promise<IndyEndpointAttrib> {
+  public getEndpointsForDid(): Promise<IndyEndpointAttrib> {
     throw new Error('Method not implemented.')
   }
 
-  public getRevocationRegistryDelta(
-    revocationRegistryDefinitionId: string,
-    to: number,
-    from: number
-  ): Promise<ParseRevocationRegistryDeltaTemplate> {
+  public getRevocationRegistryDelta(): Promise<ParseRevocationRegistryDeltaTemplate> {
     throw new Error('Method not implemented.')
   }
 
-  public getRevocationRegistry(
-    revocationRegistryDefinitionId: string,
-    timestamp: number
-  ): Promise<ParseRevocationRegistryTemplate> {
+  public getRevocationRegistry(): Promise<ParseRevocationRegistryTemplate> {
     throw new Error('Method not implemented.')
   }
 }
