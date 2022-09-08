@@ -447,11 +447,7 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
 
   // TODO-CHEQD: integrate with cheqd-sdk
   public async getSchema(schemaId: string): Promise<Indy.Schema> {
-    const resource = resourceRegistry.schemas[schemaId]
-
-    if (!resource) {
-      throw new AriesFrameworkError(`Schema with id ${schemaId} not found`)
-    }
+    const resource = await this.cheqdResourceService.getSchemaResource(schemaId)
 
   private getMsgCreateResourcePayloadAminoSignBytes(message: MsgCreateResourcePayload): Uint8Array {
     const writer = new Writer()
