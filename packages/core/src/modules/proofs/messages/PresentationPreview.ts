@@ -6,12 +6,10 @@ import {
   IsMimeType,
   IsOptional,
   IsString,
-  Matches,
   ValidateIf,
   ValidateNested,
 } from 'class-validator'
 
-import { credDefIdRegex } from '../../../utils'
 import { JsonTransformer } from '../../../utils/JsonTransformer'
 import { IsValidMessageType, parseMessageType, replaceLegacyDidSovPrefix } from '../../../utils/messageType'
 import { PredicateType } from '../models/PredicateType'
@@ -40,7 +38,6 @@ export class PresentationPreviewAttribute {
   @Expose({ name: 'cred_def_id' })
   @IsString()
   @ValidateIf((o: PresentationPreviewAttribute) => o.referent !== undefined)
-  @Matches(credDefIdRegex)
   public credentialDefinitionId?: string
 
   @Expose({ name: 'mime-type' })
@@ -83,7 +80,6 @@ export class PresentationPreviewPredicate {
 
   @Expose({ name: 'cred_def_id' })
   @IsString()
-  @Matches(credDefIdRegex)
   public credentialDefinitionId!: string
 
   @IsEnum(PredicateType)

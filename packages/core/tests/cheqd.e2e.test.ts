@@ -1,13 +1,32 @@
 import type { SubjectMessage } from '../../../tests/transport/SubjectInboundTransport'
+import type { CredentialStateChangedEvent, ProofStateChangedEvent } from '../src'
 
-import { Subject } from 'rxjs'
+import { ReplaySubject, Subject } from 'rxjs'
 
 import { SubjectInboundTransport } from '../../../tests/transport/SubjectInboundTransport'
 import { SubjectOutboundTransport } from '../../../tests/transport/SubjectOutboundTransport'
-import { CredentialState, CredentialStateChangedEvent, Agent, CredentialEventTypes, LogLevel } from '../src'
+import {
+  CredentialState,
+  Agent,
+  CredentialEventTypes,
+  LogLevel,
+  PresentationPreview,
+  PresentationPreviewAttribute,
+  PresentationPreviewPredicate,
+  PredicateType,
+  ProofRecord,
+  ProofState,
+  ProofEventTypes,
+} from '../src'
 import { sleep } from '../src/utils/sleep'
 
-import { getBaseConfig, waitForCredentialRecord } from './helpers'
+import {
+  getBaseConfig,
+  waitForCredentialRecord,
+  waitForCredentialRecordSubject,
+  waitForProofRecord,
+  waitForProofRecordSubject,
+} from './helpers'
 import { TestLogger } from './logger'
 
 const logger = new TestLogger(LogLevel.debug)
@@ -39,6 +58,21 @@ describe('Cheqd', () => {
     aliceAgent.registerInboundTransport(new SubjectInboundTransport(aliceMessages))
     aliceAgent.registerOutboundTransport(new SubjectOutboundTransport(subjectMap))
     await aliceAgent.initialize()
+
+    const faberCredentialReplay = new ReplaySubject<CredentialStateChangedEvent>()
+    const aliceCredentialReplay = new ReplaySubject<CredentialStateChangedEvent>()
+    const faberProofReplay = new ReplaySubject<ProofStateChangedEvent>()
+    const aliceProofReplay = new ReplaySubject<ProofStateChangedEvent>()
+
+    faberAgent.events
+      .observable<CredentialStateChangedEvent>(CredentialEventTypes.CredentialStateChanged)
+      .subscribe(faberCredentialReplay)
+    aliceAgent.events
+      .observable<CredentialStateChangedEvent>(CredentialEventTypes.CredentialStateChanged)
+      .subscribe(aliceCredentialReplay)
+
+    faberAgent.events.observable<ProofStateChangedEvent>(ProofEventTypes.ProofStateChanged).subscribe(faberProofReplay)
+    aliceAgent.events.observable<ProofStateChangedEvent>(ProofEventTypes.ProofStateChanged).subscribe(aliceProofReplay)
 
     const schema = await faberAgent.ledger.registerSchema({
       attributes: ['name', 'age'],
@@ -77,10 +111,6 @@ describe('Cheqd', () => {
     await aliceAgent.connections.returnWhenIsConnected(aliceConnectionRecord.id)
     const [faberConnection] = await faberAgent.connections.findAllByOutOfBandId(faberOutOfBandRecord.id)
 
-    let aliceCredentialRecordPromise = waitForCredentialRecord(aliceAgent, {
-      state: CredentialState.OfferReceived,
-    })
-
     let faberCredentialRecord = await faberAgent.credentials.offerCredential({
       connectionId: faberConnection.id,
       protocolVersion: 'v2',
@@ -101,29 +131,83 @@ describe('Cheqd', () => {
       },
     })
 
-    let aliceCredentialRecord = await aliceCredentialRecordPromise
+    let aliceCredentialRecord = await waitForCredentialRecordSubject(aliceCredentialReplay, {
+      state: CredentialState.OfferReceived,
+    })
 
-    let faberCredentialRecordPromise = waitForCredentialRecord(faberAgent, {
+    await aliceAgent.credentials.acceptOffer({ credentialRecordId: aliceCredentialRecord.id })
+    faberCredentialRecord = await waitForCredentialRecordSubject(faberCredentialReplay, {
       state: CredentialState.RequestReceived,
       threadId: faberCredentialRecord.threadId,
     })
-    await aliceAgent.credentials.acceptOffer({ credentialRecordId: aliceCredentialRecord.id })
-    faberCredentialRecord = await faberCredentialRecordPromise
 
-    aliceCredentialRecordPromise = waitForCredentialRecord(aliceAgent, {
+    faberCredentialRecord = await faberAgent.credentials.acceptRequest({ credentialRecordId: faberCredentialRecord.id })
+    aliceCredentialRecord = await waitForCredentialRecordSubject(aliceCredentialReplay, {
       state: CredentialState.CredentialReceived,
     })
-    faberCredentialRecord = await faberAgent.credentials.acceptRequest({ credentialRecordId: faberCredentialRecord.id })
-    aliceCredentialRecord = await aliceCredentialRecordPromise
 
-    faberCredentialRecordPromise = waitForCredentialRecord(faberAgent, {
+    await aliceAgent.credentials.acceptCredential({ credentialRecordId: aliceCredentialRecord.id })
+    await waitForCredentialRecordSubject(faberCredentialReplay, {
       state: CredentialState.Done,
     })
-    await aliceAgent.credentials.acceptCredential({ credentialRecordId: aliceCredentialRecord.id })
-
-    faberCredentialRecord = await faberCredentialRecordPromise
 
     console.log(await aliceAgent.credentials.getFormatData(aliceCredentialRecord.id))
+
+    //
+    // PROOFS
+    //
+
+    let aliceProofRecord = await aliceAgent.proofs.proposeProof(
+      aliceConnectionRecord.id,
+      new PresentationPreview({
+        attributes: [
+          new PresentationPreviewAttribute({
+            name: 'name',
+            credentialDefinitionId: credentialDefinition.id,
+            value: 'Berend',
+          }),
+        ],
+        predicates: [
+          new PresentationPreviewPredicate({
+            credentialDefinitionId: credentialDefinition.id,
+            name: 'age',
+            predicate: PredicateType.GreaterThanOrEqualTo,
+            threshold: 18,
+          }),
+        ],
+      })
+    )
+
+    let faberProofRecord = await waitForProofRecordSubject(faberProofReplay, {
+      state: ProofState.ProposalReceived,
+      threadId: aliceProofRecord.threadId,
+    })
+
+    faberProofRecord = await faberAgent.proofs.acceptProposal(faberProofRecord.id)
+
+    aliceProofRecord = await waitForProofRecordSubject(aliceProofReplay, {
+      threadId: aliceProofRecord.threadId,
+      state: ProofState.RequestReceived,
+    })
+
+    const requestedCredentials = await aliceAgent.proofs.getRequestedCredentialsForProofRequest(aliceProofRecord.id, {
+      filterByNonRevocationRequirements: true,
+      filterByPresentationPreview: true,
+    })
+    const selectedCredentials = aliceAgent.proofs.autoSelectCredentialsForProofRequest(requestedCredentials)
+    aliceProofRecord = await aliceAgent.proofs.acceptRequest(aliceProofRecord.id, selectedCredentials)
+
+    faberProofRecord = await waitForProofRecordSubject(faberProofReplay, {
+      threadId: aliceProofRecord.threadId,
+      state: ProofState.PresentationReceived,
+    })
+    await faberAgent.proofs.acceptPresentation(faberProofRecord.id)
+    aliceProofRecord = await waitForProofRecordSubject(aliceProofReplay, {
+      threadId: aliceProofRecord.threadId,
+      state: ProofState.Done,
+    })
+
+    console.log(aliceProofRecord)
 
     await faberAgent.wallet.delete()
     await aliceAgent.wallet.delete()

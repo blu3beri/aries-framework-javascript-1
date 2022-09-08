@@ -49,26 +49,66 @@ export class IndyHolderService {
   }: CreateProofOptions): Promise<Indy.IndyProof> {
     try {
       this.logger.debug('Creating Indy Proof')
+
+      const request = this.getIndyProofRequestFromCheqdProofRequest(proofRequest)
       const revocationStates: Indy.RevStates = await this.indyRevocationService.createRevocationState(
-        proofRequest,
+        request,
         requestedCredentials
       )
 
+      const idMapping: { [key: string]: string } = {}
+
+      const goodSchemas = Object.entries(schemas)
+        .map(([schemaId, schema]) => {
+          const schemaResource = resourceRegistry.schemas[schemaId]
+          if (!schemaResource) throw new Error('no schema found')
+          const indySchemaId = indySchemaIdFromSchemaResource(schemaResource)
+
+          idMapping[indySchemaId] = schemaId
+          return [indySchemaId, { ...schema, id: indySchemaId }] as const
+        })
+        .reduce((acc, [schemaId, schema]) => ({ ...acc, [schemaId]: schema }), {})
+
+      const goodCredDefs = Object.entries(credentialDefinitions)
+        .map(([credDefId, credDef]) => {
+          const credDefResource = resourceRegistry.credentialDefinitions[credDefId]
+          if (!credDefResource) throw new Error('no credential definition found')
+          const indyCredDefId = indyCredentialDefinitionIdFromCredentialDefinitionResource(credDefResource)
+
+          idMapping[indyCredDefId] = credDefId
+          const schemaResource = resourceRegistry.schemas[credDef.schemaId]
+          if (!schemaResource) throw new Error('no schema found')
+          const schemaId = indySchemaIdFromSchemaResource(schemaResource)
+          idMapping[schemaId] = credDef.schemaId
+
+          return [indyCredDefId, { ...credDef, id: indyCredDefId, schemaId }] as const
+        })
+        .reduce((acc, [schemaId, schema]) => ({ ...acc, [schemaId]: schema }), {})
+
       const indyProof: Indy.IndyProof = await this.indy.proverCreateProof(
         this.wallet.handle,
-        proofRequest,
+        request,
         requestedCredentials.toJSON(),
         this.wallet.masterSecretId,
-        schemas,
-        credentialDefinitions,
+        goodSchemas,
+        goodCredDefs,
         revocationStates
       )
+
+      const proof = {
+        ...indyProof,
+        identifiers: indyProof.identifiers.map((i) => ({
+          ...i,
+          schema_id: idMapping[i.schema_id],
+          cred_def_id: idMapping[i.cred_def_id],
+        })),
+      }
 
       this.logger.trace('Created Indy Proof', {
         indyProof,
       })
 
-      return indyProof
+      return proof
     } catch (error) {
       this.logger.error(`Error creating Indy Proof`, {
         error,
@@ -203,6 +243,83 @@ export class IndyHolderService {
     }
   }
 
+  private getIndyProofRequestFromCheqdProofRequest(proofRequest: Indy.IndyProofRequest) {
+    const requestedAttributes = {} as Indy.IndyProofRequest['requested_attributes']
+    const requestedPredicates = {} as Indy.IndyProofRequest['requested_predicates']
+
+    for (const [groupName, requestedAttribute] of Object.entries(proofRequest.requested_attributes)) {
+      if (!requestedAttribute.restrictions) {
+        requestedAttributes[groupName] = requestedAttribute
+        continue
+      }
+
+      const restrictions = []
+
+      for (const restriction of requestedAttribute.restrictions) {
+        const newRestriction = { ...restriction }
+
+        if (typeof restriction.schema_id === 'string') {
+          const schemaResource = resourceRegistry.schemas[restriction.schema_id]
+          if (!schemaResource) throw new Error('no schema found')
+          newRestriction.schema_id = indySchemaIdFromSchemaResource(schemaResource)
+        }
+
+        if (typeof restriction.cred_def_id === 'string') {
+          const credDefResource = resourceRegistry.credentialDefinitions[restriction.cred_def_id]
+          if (!credDefResource) throw new Error('no cred def found')
+          newRestriction.cred_def_id = indyCredentialDefinitionIdFromCredentialDefinitionResource(credDefResource)
+        }
+
+        restrictions.push(newRestriction)
+      }
+
+      requestedAttributes[groupName] = {
+        ...requestedAttribute,
+        restrictions,
+      }
+    }
+
+    for (const [groupName, requestedPredicate] of Object.entries(proofRequest.requested_predicates)) {
+      if (!requestedPredicate.restrictions) {
+        requestedPredicates[groupName] = requestedPredicate
+        continue
+      }
+
+      const restrictions = []
+
+      for (const restriction of requestedPredicate.restrictions) {
+        const newRestriction = { ...restriction }
+
+        if (typeof restriction.schema_id === 'string') {
+          const schemaResource = resourceRegistry.schemas[restriction.schema_id]
+          if (!schemaResource) throw new Error('no schema found')
+          newRestriction.schema_id = indySchemaIdFromSchemaResource(schemaResource)
+        }
+
+        if (typeof restriction.cred_def_id === 'string') {
+          const credDefResource = resourceRegistry.credentialDefinitions[restriction.cred_def_id]
+          if (!credDefResource) throw new Error('no cred def found')
+          newRestriction.cred_def_id = indyCredentialDefinitionIdFromCredentialDefinitionResource(credDefResource)
+        }
+
+        restrictions.push(newRestriction)
+      }
+
+      requestedPredicates[groupName] = {
+        ...requestedPredicate,
+        restrictions,
+      }
+    }
+
+    const request: Indy.IndyProofRequest = {
+      ...proofRequest,
+      requested_attributes: requestedAttributes,
+      requested_predicates: requestedPredicates,
+    }
+
+    return request
+  }
+
   /**
    * Retrieve the credentials that are available for an attribute referent in the proof request.
    *
@@ -221,11 +338,13 @@ export class IndyHolderService {
     limit = 256,
     extraQuery,
   }: GetCredentialForProofRequestOptions): Promise<Indy.IndyCredential[]> {
+    const request = this.getIndyProofRequestFromCheqdProofRequest(proofRequest)
+
     try {
       // Open indy credential search
       const searchHandle = await this.indy.proverSearchCredentialsForProofReq(
         this.wallet.handle,
-        proofRequest,
+        request,
         extraQuery ?? null
       )
 
@@ -237,6 +356,29 @@ export class IndyHolderService {
 
         // Fetch the credentials
         const credentials = await this.fetchCredentialsForReferent(searchHandle, attributeReferent, limit)
+
+        const all = {
+          ...proofRequest.requested_attributes,
+          ...proofRequest.requested_predicates,
+        }
+        const curr = all[attributeReferent]
+        if (!curr.restrictions) {
+          throw new Error('Missing restrictions')
+        }
+
+        const credDefId = curr.restrictions[0].cred_def_id
+
+        if (typeof credDefId !== 'string') {
+          throw new Error('Only cred def filtering supported currently')
+        }
+
+        const credDefResource = resourceRegistry.credentialDefinitions[credDefId]
+        if (!credDefResource) throw new Error('no cred def found')
+
+        for (const credential of credentials) {
+          credential.cred_info.cred_def_id = credDefId
+          credential.cred_info.schema_id = credDefResource.data.AnonCredsCredDef.schemaId
+        }
 
         // TODO: sort the credentials (irrevocable first)
         return credentials
