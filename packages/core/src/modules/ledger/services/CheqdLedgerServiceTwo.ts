@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import type { Logger } from '../../../logger'
 import type { CredentialDefinitionResource, SchemaResource } from '../cheqd/cheqdIndyUtils'
 import type { GenericIndyLedgerService } from '../models/IndyLedgerService'
@@ -12,9 +11,11 @@ import type {
 } from './IndyLedgerService'
 import type { CheqdSDK, ICheqdSDKOptions } from '@cheqd/sdk'
 import type { AbstractCheqdSDKModule } from '@cheqd/sdk/build/modules/_'
-import type { DidStdFee, IContext, IKeyPair } from '@cheqd/sdk/build/types'
+import type { MsgCreateDidEncodeObject } from '@cheqd/sdk/build/modules/did'
+import type { DidStdFee, IContext, IKeyPair, IVerificationKeys } from '@cheqd/sdk/build/types'
 import type { TImportableEd25519Key } from '@cheqd/sdk/build/utils'
-import type { MsgUpdateDidPayload, SignInfo, MsgCreateDidPayload } from '@cheqd/ts-proto/cheqd/v1/tx'
+import type { VerificationMethod } from '@cheqd/ts-proto/cheqd/v1/did'
+import type { MsgUpdateDidPayload, MsgCreateDid, SignInfo } from '@cheqd/ts-proto/cheqd/v1/tx'
 import type { MsgCreateResource } from '@cheqd/ts-proto/resource/v1/tx'
 import type { DeliverTxResponse } from '@cosmjs/stargate'
 import type Indy from 'indy-sdk'
@@ -28,6 +29,7 @@ import {
   createVerificationKeys,
   createSignInputsFromImportableEd25519Key,
 } from '@cheqd/sdk/build/utils'
+import { protobufPackage, MsgCreateDidPayload } from '@cheqd/ts-proto/cheqd/v1/tx'
 import { MsgCreateResourcePayload } from '@cheqd/ts-proto/resource/v1/tx'
 import { DirectSecp256k1HdWallet } from '@cosmjs/proto-signing'
 import { base64ToBytes, EdDSASigner, ES256KSigner, ES256Signer, hexToBytes } from 'did-jwt'
@@ -39,7 +41,6 @@ import { AgentConfig } from '../../../agent/AgentConfig'
 import { KeyType } from '../../../crypto'
 import { AriesFrameworkError } from '../../../error'
 import { injectable } from '../../../plugins'
-import { TypedArrayEncoder } from '../../../utils'
 import { uuid } from '../../../utils/uuid'
 import { IndyWallet } from '../../../wallet/IndyWallet'
 import { Key } from '../../dids'
@@ -61,12 +62,6 @@ const assert = (b: boolean, msg: string) => {
 
 export type IdentifierPayload = Partial<MsgCreateDidPayload> | Partial<MsgUpdateDidPayload>
 
-const clog = (...args: any[]) => {
-  console.log('---------------------- LOG ------------------------')
-  console.log(args)
-  console.log('---------------------- LOG ------------------------')
-}
-
 // --------------
 
 export interface ISignInputs {
@@ -74,38 +69,30 @@ export interface ISignInputs {
   keyType?: 'Ed25519' | 'Secp256k1' | 'P256'
   privateKeyHex: string
 }
-export const faucet = {
-  prefix: 'cheqd',
-  minimalDenom: 'ncheq',
-  mnemonic:
-    'sketch mountain erode window enact net enrich smoke claim kangaroo another visual write meat latin bacon pulp similar forum guilt father state erase bright',
-  address: 'cheqd1rnr5jrt4exl0samwj0yegv99jeskl0hsxmcz96',
-}
 
 @injectable()
 export class CheqdLedgerService implements GenericIndyLedgerService {
   private wallet: IndyWallet
   private indy: typeof Indy
   private cheqdResourceService: CheqdResourceService
-  private logger: Logger
-  private config: AgentConfig
 
   private sdk?: CheqdSDK
   private fee?: DidStdFee
-
-  private cheqdKeyPair?: IKeyPair
+  private cheqdDid?: string
+  private verificationMethods?: VerificationMethod[]
+  private verificationKeys?: IVerificationKeys
+  private keyPair?: IKeyPair
 
   public constructor(wallet: IndyWallet, agentConfig: AgentConfig, cheqdResourceService: CheqdResourceService) {
     this.wallet = wallet
     this.indy = agentConfig.agentDependencies.indy
     this.cheqdResourceService = cheqdResourceService
-    this.logger = agentConfig.logger
-    this.config = agentConfig
   }
 
   private async getCheqdSDK(fee?: DidStdFee): Promise<CheqdSDK> {
+    const COSMOS_PAYER_MNEMONIC = 'TODO-CHEQD'
     const RPC_URL = 'https://rpc.cheqd.network'
-    const COSMOS_PAYER_WALLET = await DirectSecp256k1HdWallet.fromMnemonic(faucet.mnemonic, { prefix: faucet.prefix })
+    const COSMOS_PAYER_WALLET = await DirectSecp256k1HdWallet.fromMnemonic(COSMOS_PAYER_MNEMONIC, { prefix: 'cheqd' })
 
     if (this.sdk) return this.sdk
 
@@ -119,7 +106,7 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     this.fee = fee || {
       amount: [
         {
-          denom: faucet.minimalDenom,
+          denom: 'ncheq',
           amount: '5000000',
         },
       ],
@@ -129,6 +116,67 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     return this.sdk
   }
 
+  /**
+   * https://github.com/cheqd/did-provider-cheqd/blob/7698f320ead5d9b4e278ac13cd9319dd5115cb83/src/did-manager/cheqd-did-provider.ts#L95
+   */
+  private async createIdentifier({
+    options,
+  }: {
+    alias?: string
+    options: { document: IdentifierPayload; keys: TImportableEd25519Key[] }
+  }): Promise<string> {
+    const sdk = await this.getCheqdSDK()
+
+    const signInputs = options.keys.map((key) =>
+      createSignInputsFromImportableEd25519Key(key, options.document.verificationMethod ?? [])
+    )
+
+    const tx = await sdk.createDidTx(signInputs, options.document, '', this.fee || 'auto', undefined, { sdk })
+
+    assert(tx.code === 0, `cosmos_transaction: Failed to create DID. Reason: ${tx.rawLog}`)
+
+    // TODO-CHEQD: this will just use the `targetDid` as supplied in the registerPublicDid function
+    // Is this correct?
+    const did = options.document.id
+
+    this.cheqdDid = did
+    return did as string
+  }
+
+  // TODO-CHEQD: I don't think we would need to manually, if at all, deal with pools
+  public connectToPools(): Promise<number[]> {
+    throw new Error('Method not implemented.')
+  }
+
+  public async createDidTx(
+    signInputs: ISignInputs[],
+    didPayload: Partial<MsgCreateDidPayload>,
+    address: string,
+    fee: DidStdFee | 'auto' | number,
+    memo?: string,
+    context?: IContext
+  ): Promise<DeliverTxResponse> {
+    const sdk = await this.getCheqdSDK()
+    const signer = sdk.signer
+
+    const payload = MsgCreateDidPayload.fromPartial(didPayload)
+    const signatures = await signer.signCreateDidTx(signInputs, payload)
+
+    const value: MsgCreateDid = {
+      payload,
+      signatures,
+    }
+
+    const typeUrlMsgCreateDid = `/${protobufPackage}.MsgCreateDid`
+    const createDidMsg: MsgCreateDidEncodeObject = {
+      typeUrl: typeUrlMsgCreateDid,
+      value,
+    }
+
+    return signer.signAndBroadcast(address, [createDidMsg], fee, memo)
+  }
+
+  // TODO-CHEQD: implement
   public async registerPublicDid(
     submitterDid: string,
     targetDid: string,
@@ -137,37 +185,18 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     role?: Indy.NymRole,
     fee?: DidStdFee
   ): Promise<string> {
-    const seed = this.config.publicDidSeed
-    assert(seed ? seed.length > 0 : false, 'NO SEED PROVIDED IN THE AGENT CONFIG')
     // TODO-CHEQD: create/get a keypair from wallet
-    const cheqdKeyPair = createKeyPairBase64()
-    this.cheqdKeyPair = cheqdKeyPair
-
-    const indyKeyPair: IKeyPair = {
-      publicKey: verkey,
-      privateKey: ':)',
-    }
-
-    const cheqdKeyParBase58: IKeyPair = {
-      publicKey: TypedArrayEncoder.toBase58(TypedArrayEncoder.fromBase64(cheqdKeyPair.publicKey)),
-      privateKey: TypedArrayEncoder.toBase58(TypedArrayEncoder.fromBase64(cheqdKeyPair.privateKey)),
-    }
-
-    const indyVerificationKey = createVerificationKeys(indyKeyPair, MethodSpecificIdAlgo.Base58, 'key-1')
-    const cheqdVerificationKey = createVerificationKeys(cheqdKeyParBase58, MethodSpecificIdAlgo.Base58, 'key-2')
-    const verificationKeys = [indyVerificationKey]
-    const verificationMethods = createDidVerificationMethod(
-      [VerificationMethods.Base58, VerificationMethods.Base58],
-      [indyVerificationKey, cheqdVerificationKey]
-    )
-
-    const didPayload = createDidPayload(verificationMethods, verificationKeys)
-    console.log(JSON.stringify(didPayload))
-
-    // Use the cheqd keypair for sining
-    const privateKeyHex = toString(fromString(cheqdKeyParBase58.privateKey, 'base58btc'), 'hex')
-    const publicKeyHex = toString(fromString(cheqdKeyParBase58.publicKey, 'base58btc'), 'hex')
-
+    const keyPair = createKeyPairBase64()
+    this.keyPair = keyPair
+    const verificationKeys = createVerificationKeys(keyPair, MethodSpecificIdAlgo.Base58, 'key-1', 16)
+    this.verificationKeys = verificationKeys
+    const verificationMethods = createDidVerificationMethod([VerificationMethods.Base58], [verificationKeys])
+    this.verificationMethods
+      ? this.verificationMethods.push(...verificationMethods)
+      : (this.verificationMethods = verificationMethods)
+    const didPayload = createDidPayload(verificationMethods, [verificationKeys])
+    const privateKeyHex = toString(fromString(keyPair.privateKey, 'base64'), 'hex')
+    const publicKeyHex = toString(fromString(keyPair.publicKey, 'base64'), 'hex')
     const key: TImportableEd25519Key = {
       type: 'Ed25519',
       privateKeyHex: privateKeyHex,
@@ -175,18 +204,41 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
       publicKeyHex: publicKeyHex,
     }
 
-    const signInputs = [key].map((k) => createSignInputsFromImportableEd25519Key(k, verificationMethods))
+    const signInputs: ISignInputs[] = [
+      {
+        verificationMethodId: didPayload.verificationMethod[0].id,
+        keyType: 'Ed25519',
+        privateKeyHex: privateKeyHex,
+      },
+    ]
 
     const sdk = await this.getCheqdSDK()
 
-    const resp = await sdk.createDidTx(signInputs, didPayload, faucet.address, this.fee || 'auto', undefined, { sdk })
-    assert(resp.code === 0, `Could not register did! Response ${JSON.stringify(resp)}`)
+    const didTx: DeliverTxResponse = await this.createDidTx(
+      signInputs,
+      didPayload,
+      (
+        await sdk.options.wallet.getAccounts()
+      )[0].address,
+      this.fee ?? {
+        amount: [
+          {
+            denom: 'ncheq',
+            amount: '5000000',
+          },
+        ],
+        gas: '200000',
+        payer: (await sdk.options.wallet.getAccounts())[0].address,
+      }
+    )
 
-    // TODOOOOOO
-    // INDY:  TL1EaPFCZ8Si5aUrqScBDt
-    // CHEQD: zFMGcFuU3QwAQLyw
+    this.logger.warn(`Using payload: ${JSON.stringify(didPayload)}`)
+    this.logger.warn(`DID Tx: ${JSON.stringify(didTx)}`)
 
-    return didPayload.id
+    const identifier = this.createIdentifier({
+      options: { document: { id: targetDid, alsoKnownAs: [alias] }, keys: [key] },
+    })
+    return identifier
   }
 
   // TODO-CHEQD: implement
@@ -243,8 +295,6 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     // Register schema in local registry
     resourceRegistry.schemas[resource.data.AnonCredsObjectMetadata.objectURI] = resource
 
-    console.log(this.verificationMethods)
-
     if (!this.verificationMethods) throw new AriesFrameworkError('Missing verification methods')
     if (!this.verificationKeys) throw new AriesFrameworkError('Missing verification keys')
 
@@ -264,7 +314,7 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
   private async writeTxResource(resourceId: string, resourcePayload: MsgCreateResourcePayload) {
     if (!this.verificationMethods) throw new AriesFrameworkError('Missing verification methods')
     if (!this.verificationKeys) throw new AriesFrameworkError('Missing verification keys')
-    if (!this.cheqdKeyPair) throw new AriesFrameworkError('Missing verification keys')
+    if (!this.keyPair) throw new AriesFrameworkError('Missing verification keys')
 
     const didPayload = createDidPayload(this.verificationMethods, [this.verificationKeys])
 
@@ -275,7 +325,7 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
       {
         verificationMethodId: didPayload.verificationMethod[0].id,
         keyType: 'Ed25519',
-        privateKeyHex: toString(fromString(this.cheqdKeyPair.privateKey, 'base64'), 'hex'),
+        privateKeyHex: toString(fromString(this.keyPair.privateKey, 'base64'), 'hex'),
       },
     ]
 
@@ -299,7 +349,7 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
 
     this.logger.warn(`Resource Tx: ${JSON.stringify(resourceTx)}`)
 
-    assert(resourceTx.code === 0, `ResourceTx not written. Exit data ${JSON.stringify(resourceTx)}`)
+    assert(resourceTx.code === 0, 'ResourceTx not written. Exit code unequal to 0')
 
     return resourceTx
   }
@@ -370,34 +420,6 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
 
     return signInfos
   }
-
-  private getMsgCreateResourcePayloadAminoSignBytes(message: MsgCreateResourcePayload): Uint8Array {
-    const writer = new Writer()
-
-    if (message.collectionId !== '') {
-      writer.uint32(10).string(message.collectionId)
-    }
-    if (message.id !== '') {
-      writer.uint32(18).string(message.id)
-    }
-    if (message.name !== '') {
-      writer.uint32(26).string(message.name)
-    }
-    if (message.resourceType !== '') {
-      writer.uint32(34).string(message.resourceType)
-    }
-    if (message.data.length !== 0) {
-      // Animo coded assigns index 5 to this property. In proto definitions it's 6.
-      // Since we use amino on node + non default property indexing, we need to encode it manually.
-      writer.uint32(42).bytes(message.data)
-    }
-
-    return writer.finish()
-  }
-
-  // TODO-CHEQD: integrate with cheqd-sdk
-  public async getSchema(schemaId: string): Promise<Indy.Schema> {
-    const resource = await this.cheqdResourceService.getSchemaResource(schemaId)
 
   private getMsgCreateResourcePayloadAminoSignBytes(message: MsgCreateResourcePayload): Uint8Array {
     const writer = new Writer()
@@ -524,10 +546,6 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
   }
 
   public getRevocationRegistry(): Promise<ParseRevocationRegistryTemplate> {
-    throw new Error('Method not implemented.')
-  }
-
-  public connectToPools(): Promise<number[]> {
     throw new Error('Method not implemented.')
   }
 }

@@ -14,20 +14,13 @@ import {
   PresentationPreviewAttribute,
   PresentationPreviewPredicate,
   PredicateType,
-  ProofRecord,
   ProofState,
   ProofEventTypes,
 } from '../src'
-import { sleep } from '../src/utils/sleep'
 
-import {
-  getBaseConfig,
-  waitForCredentialRecord,
-  waitForCredentialRecordSubject,
-  waitForProofRecord,
-  waitForProofRecordSubject,
-} from './helpers'
+import { getBaseConfig, waitForCredentialRecordSubject, waitForProofRecordSubject } from './helpers'
 import { TestLogger } from './logger'
+import { IndyWallet } from '../src/wallet/IndyWallet'
 
 const logger = new TestLogger(LogLevel.debug)
 
@@ -74,6 +67,14 @@ describe('Cheqd', () => {
     faberAgent.events.observable<ProofStateChangedEvent>(ProofEventTypes.ProofStateChanged).subscribe(faberProofReplay)
     aliceAgent.events.observable<ProofStateChangedEvent>(ProofEventTypes.ProofStateChanged).subscribe(aliceProofReplay)
 
+    const faberWallet = faberAgent.dependencyManager.resolve(IndyWallet)
+    const didInfo = await faberWallet.createDid({ seed: '000000000000000000000000Trustee9' })
+    const publicDid = await faberAgent.ledger.registerPublicDid(didInfo.did, didInfo.verkey, 'alias', 'TRUST_ANCHOR')
+
+    expect(publicDid).toMatch(new RegExp('^did:cheqd:testnet:'))
+
+    console.log(`=============================\n${publicDid}\n=============================`)
+
     const schema = await faberAgent.ledger.registerSchema({
       attributes: ['name', 'age'],
       name: 'test',
@@ -85,8 +86,6 @@ describe('Cheqd', () => {
     const retrievedSchema = await faberAgent.ledger.getSchema(schema.id)
     expect(retrievedSchema).toEqual(schema)
 
-    console.log(retrievedSchema)
-
     const credentialDefinition = await faberAgent.ledger.registerCredentialDefinition({
       schema: retrievedSchema,
       supportRevocation: false,
@@ -97,8 +96,6 @@ describe('Cheqd', () => {
     const retrievedCredentialDefinition = await faberAgent.ledger.getCredentialDefinition(credentialDefinition.id)
 
     expect(retrievedCredentialDefinition).toEqual(credentialDefinition)
-
-    console.log(retrievedCredentialDefinition)
 
     const faberOutOfBandRecord = await faberAgent.oob.createInvitation()
 
