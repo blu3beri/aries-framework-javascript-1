@@ -17,8 +17,10 @@ import type { TImportableEd25519Key } from '@cheqd/sdk/build/utils'
 import type { MsgUpdateDidPayload, SignInfo, MsgCreateDidPayload } from '@cheqd/ts-proto/cheqd/v1/tx'
 import type { MsgCreateResource } from '@cheqd/ts-proto/resource/v1/tx'
 import type { DeliverTxResponse } from '@cosmjs/stargate'
+import type { DIDDocument } from 'did-resolver'
 import type Indy from 'indy-sdk'
 
+import { agentDependencies } from '@aries-framework/node'
 import { DIDModule, createCheqdSDK } from '@cheqd/sdk'
 import { MethodSpecificIdAlgo, VerificationMethods } from '@cheqd/sdk/build/types'
 import {
@@ -42,7 +44,9 @@ import { injectable } from '../../../plugins'
 import { TypedArrayEncoder } from '../../../utils'
 import { uuid } from '../../../utils/uuid'
 import { IndyWallet } from '../../../wallet/IndyWallet'
+import { DidDoc } from '../../connections'
 import { Key } from '../../dids'
+import { didDocumentToNumAlgo2Did } from '../../dids/methods/peer/peerDidNumAlgo2'
 import {
   indyCredentialDefinitionFromCredentialDefinitionResource,
   indySchemaFromSchemaResource,
@@ -186,18 +190,20 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
   }
 
   // TODO-CHEQD: implement
-  public async getPublicDid(): Promise<Indy.GetNymResponse> {
-    const sdk = await this.getCheqdSDK()
-    const verkey = (await sdk.options.wallet.getAccounts())[0].pubkey
-    if (!this.cheqdDid) {
-      throw new AriesFrameworkError('No did available')
-    } else {
-      const getNymResponse: Indy.GetNymResponse = {
-        did: this.cheqdDid,
-        verkey: verkey[0].toString(), // TODO: is this really the verkey?
-        role: 'TRUSTEE', // TODO: What is the role? Where to get the correct role from?
-      }
-      return getNymResponse
+  public async getPublicDid(did: string): Promise<Indy.GetNymResponse> {
+    const didDoc: DIDDocument = (
+      await (await agentDependencies.fetch(`https://dev.uniresolver.io/1.0/identifiers/${did}`)).json()
+    ).didDocument
+    const data = (didDoc.verificationMethod ?? []).find((v) => v.id.endsWith('indykey-1'))
+    if (!data) throw new AriesFrameworkError('NO indykey-1 FOUND IN THE VERIFICATION METHODS')
+    const verkey = data.publicKeyMultibase
+    if (!verkey) throw new AriesFrameworkError('NO publicKeyMultibase FOUND IN THE VERIFICATION METHODS')
+
+    return {
+      did: data.id.replace('#indykey-1', ''),
+      verkey,
+      // MOCK ROLE
+      role: 'TRUSTEE',
     }
   }
 
