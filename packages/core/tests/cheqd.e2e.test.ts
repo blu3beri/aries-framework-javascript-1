@@ -68,12 +68,13 @@ describe('Cheqd', () => {
     aliceAgent.events.observable<ProofStateChangedEvent>(ProofEventTypes.ProofStateChanged).subscribe(aliceProofReplay)
 
     const faberWallet = faberAgent.dependencyManager.resolve(IndyWallet)
-    const didInfo = await faberWallet.createDid({ seed: '000000000000000000000000Trustee9' })
+    const didInfo = await faberWallet.createDid()
     const publicDid = await faberAgent.ledger.registerPublicDid(didInfo.did, didInfo.verkey, 'alias', 'TRUST_ANCHOR')
 
     expect(publicDid).toMatch(new RegExp('^did:cheqd:testnet:'))
 
-    console.log(`=============================\n${publicDid}\n=============================`)
+    const resolvedPublicDidData = await faberAgent.ledger.getPublicDid(publicDid)
+    expect(resolvedPublicDidData.did).toStrictEqual(publicDid)
 
     const schema = await faberAgent.ledger.registerSchema({
       attributes: ['name', 'age'],

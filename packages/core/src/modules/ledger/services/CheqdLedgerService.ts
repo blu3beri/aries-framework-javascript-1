@@ -144,29 +144,29 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     this.cheqdKeyPair = cheqdKeyPair
 
     const indyKeyPair: IKeyPair = {
-      publicKey: verkey,
+      publicKey: TypedArrayEncoder.toBase64(TypedArrayEncoder.fromBase58(verkey)),
       privateKey: ':)',
     }
 
-    const cheqdKeyParBase58: IKeyPair = {
-      publicKey: TypedArrayEncoder.toBase58(TypedArrayEncoder.fromBase64(cheqdKeyPair.publicKey)),
-      privateKey: TypedArrayEncoder.toBase58(TypedArrayEncoder.fromBase64(cheqdKeyPair.privateKey)),
-    }
-
-    const indyVerificationKey = createVerificationKeys(indyKeyPair, MethodSpecificIdAlgo.Base58, 'key-1')
-    const cheqdVerificationKey = createVerificationKeys(cheqdKeyParBase58, MethodSpecificIdAlgo.Base58, 'key-2')
+    const indyVerificationKey = createVerificationKeys(indyKeyPair, MethodSpecificIdAlgo.Base58, 'indykey-1')
+    const cheqdVerificationKey = createVerificationKeys(cheqdKeyPair, MethodSpecificIdAlgo.Base58, 'key-2')
     const verificationKeys = [indyVerificationKey]
+
     const verificationMethods = createDidVerificationMethod(
       [VerificationMethods.Base58, VerificationMethods.Base58],
       [indyVerificationKey, cheqdVerificationKey]
-    )
+    ).map((m) => {
+      m.id = indyVerificationKey.didUrl + '#' + m.id.split('#')[1]
+      m.controller = indyVerificationKey.didUrl
+      return m
+    })
 
     const didPayload = createDidPayload(verificationMethods, verificationKeys)
     console.log(JSON.stringify(didPayload))
 
     // Use the cheqd keypair for sining
-    const privateKeyHex = toString(fromString(cheqdKeyParBase58.privateKey, 'base58btc'), 'hex')
-    const publicKeyHex = toString(fromString(cheqdKeyParBase58.publicKey, 'base58btc'), 'hex')
+    const privateKeyHex = toString(fromString(cheqdKeyPair.privateKey, 'base64'), 'hex')
+    const publicKeyHex = toString(fromString(cheqdKeyPair.publicKey, 'base64'), 'hex')
 
     const key: TImportableEd25519Key = {
       type: 'Ed25519',
@@ -175,16 +175,12 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
       publicKeyHex: publicKeyHex,
     }
 
-    const signInputs = [key].map((k) => createSignInputsFromImportableEd25519Key(k, verificationMethods))
+    const signInputs = [key].map((k) => createSignInputsFromImportableEd25519Key(k, [verificationMethods[1]]))
 
     const sdk = await this.getCheqdSDK()
 
     const resp = await sdk.createDidTx(signInputs, didPayload, faucet.address, this.fee || 'auto', undefined, { sdk })
     assert(resp.code === 0, `Could not register did! Response ${JSON.stringify(resp)}`)
-
-    // TODOOOOOO
-    // INDY:  TL1EaPFCZ8Si5aUrqScBDt
-    // CHEQD: zFMGcFuU3QwAQLyw
 
     return didPayload.id
   }
@@ -396,32 +392,32 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
   }
 
   // TODO-CHEQD: integrate with cheqd-sdk
-  public async getSchema(schemaId: string): Promise<Indy.Schema> {
-    const resource = await this.cheqdResourceService.getSchemaResource(schemaId)
+  //public async getSchema(schemaId: string): Promise<Indy.Schema> {
+  //  const resource = await this.cheqdResourceService.getSchemaResource(schemaId)
 
-  private getMsgCreateResourcePayloadAminoSignBytes(message: MsgCreateResourcePayload): Uint8Array {
-    const writer = new Writer()
+  //private getMsgCreateResourcePayloadAminoSignBytes(message: MsgCreateResourcePayload): Uint8Array {
+  //  const writer = new Writer()
 
-    if (message.collectionId !== '') {
-      writer.uint32(10).string(message.collectionId)
-    }
-    if (message.id !== '') {
-      writer.uint32(18).string(message.id)
-    }
-    if (message.name !== '') {
-      writer.uint32(26).string(message.name)
-    }
-    if (message.resourceType !== '') {
-      writer.uint32(34).string(message.resourceType)
-    }
-    if (message.data.length !== 0) {
-      // Animo coded assigns index 5 to this property. In proto definitions it's 6.
-      // Since we use amino on node + non default property indexing, we need to encode it manually.
-      writer.uint32(42).bytes(message.data)
-    }
+  //  if (message.collectionId !== '') {
+  //    writer.uint32(10).string(message.collectionId)
+  //  }
+  //  if (message.id !== '') {
+  //    writer.uint32(18).string(message.id)
+  //  }
+  //  if (message.name !== '') {
+  //    writer.uint32(26).string(message.name)
+  //  }
+  //  if (message.resourceType !== '') {
+  //    writer.uint32(34).string(message.resourceType)
+  //  }
+  //  if (message.data.length !== 0) {
+  //    // Animo coded assigns index 5 to this property. In proto definitions it's 6.
+  //    // Since we use amino on node + non default property indexing, we need to encode it manually.
+  //    writer.uint32(42).bytes(message.data)
+  //  }
 
-    return writer.finish()
-  }
+  //  return writer.finish()
+  //}
 
   // TODO-CHEQD: integrate with cheqd-sdk
   public async getSchema(schemaId: string): Promise<Indy.Schema> {
