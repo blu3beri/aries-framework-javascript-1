@@ -74,7 +74,7 @@ describe('Cheqd', () => {
     expect(publicDid).toMatch(new RegExp('^did:cheqd:testnet:'))
 
     const resolvedPublicDidData = await faberAgent.ledger.getPublicDid(publicDid)
-    expect(resolvedPublicDidData.did).toStrictEqual(publicDid)
+    expect(resolvedPublicDidData.did).toStrictEqual(didInfo.did)
 
     const schema = await faberAgent.ledger.registerSchema({
       attributes: ['name', 'age'],

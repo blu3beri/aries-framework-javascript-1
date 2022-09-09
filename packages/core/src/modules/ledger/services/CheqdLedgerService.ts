@@ -41,7 +41,7 @@ import { AgentConfig } from '../../../agent/AgentConfig'
 import { KeyType } from '../../../crypto'
 import { AriesFrameworkError } from '../../../error'
 import { injectable } from '../../../plugins'
-import { TypedArrayEncoder } from '../../../utils'
+import { indyDidFromPublicKeyBase58, MultiBaseEncoder, TypedArrayEncoder } from '../../../utils'
 import { uuid } from '../../../utils/uuid'
 import { IndyWallet } from '../../../wallet/IndyWallet'
 import { DidDoc } from '../../connections'
@@ -54,6 +54,7 @@ import {
 } from '../cheqd/cheqdIndyUtils'
 
 import { CheqdResourceService } from './CheqdResourceService'
+import { typeUrlMsgCreateDid } from '@cheqd/sdk/build/modules/did'
 
 // --------------
 
@@ -189,18 +190,18 @@ export class CheqdLedgerService implements GenericIndyLedgerService {
     return didPayload.id
   }
 
-  // TODO-CHEQD: implement
   public async getPublicDid(did: string): Promise<Indy.GetNymResponse> {
     const didDoc: DIDDocument = (
       await (await agentDependencies.fetch(`https://dev.uniresolver.io/1.0/identifiers/${did}`)).json()
     ).didDocument
-    const data = (didDoc.verificationMethod ?? []).find((v) => v.id.endsWith('indykey-1'))
-    if (!data) throw new AriesFrameworkError('NO indykey-1 FOUND IN THE VERIFICATION METHODS')
-    const verkey = data.publicKeyMultibase
+    const didDocData = (didDoc.verificationMethod ?? []).find((v) => v.id.endsWith('indykey-1'))
+    if (!didDocData) throw new AriesFrameworkError('NO indykey-1 FOUND IN THE VERIFICATION METHODS')
+    const verkey = didDocData.publicKeyMultibase
     if (!verkey) throw new AriesFrameworkError('NO publicKeyMultibase FOUND IN THE VERIFICATION METHODS')
 
+    const { data } = MultiBaseEncoder.decode(verkey)
     return {
-      did: data.id.replace('#indykey-1', ''),
+      did: indyDidFromPublicKeyBase58(TypedArrayEncoder.toBase58(data)),
       verkey,
       // MOCK ROLE
       role: 'TRUSTEE',
