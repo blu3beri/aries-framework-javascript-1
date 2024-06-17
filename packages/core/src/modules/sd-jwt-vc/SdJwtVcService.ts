@@ -31,7 +31,7 @@ type SdJwtVcConfig = SDJwtVcInstance['userConfig']
 
 export interface SdJwtVc<
   Header extends SdJwtVcHeader = SdJwtVcHeader,
-  Payload extends SdJwtVcPayload = SdJwtVcPayload
+  Payload extends SdJwtVcPayload = SdJwtVcPayload,
 > {
   compact: string
   header: Header
@@ -393,7 +393,36 @@ export class SdJwtVcService {
       }
     }
 
-    throw new SdJwtVcError("Unsupported credential issuer. Only 'did' is supported at the moment.")
+    const validateChain = (chain: Array<string>) => {
+      // TODO: add validation according to RFC 5280
+      // Throw an error when an issue is found
+      // TODO:
+      //   Check whether the first certificate has a `SAN-dns` of the `iss` field
+      //   should this be done in the `verify` method as this is reused between the issue and verify function
+      const certificate = chain[0]
+      if (!certificate) throw new Error('Certificate chain is empty')
+    }
+
+    const parseCertificate = (encodedCertificate: string) => ({
+      algorithm: 'a',
+      key: new Uint8Array(0),
+      issuer: encodedCertificate,
+    })
+
+    if (issuer.method === 'x5c') {
+      validateChain(issuer.chain)
+
+      const { algorithm: alg, issuer: iss, key } = parseCertificate(issuer.chain[0])
+
+      return {
+        alg,
+        key,
+        iss,
+        x5c: issuer.chain,
+      }
+    }
+
+    throw new SdJwtVcError("Unsupported credential issuer. Only 'did' and 'x5c' is supported at the moment.")
   }
 
   private parseIssuerFromCredential<Header extends SdJwtVcHeader, Payload extends SdJwtVcPayload>(
