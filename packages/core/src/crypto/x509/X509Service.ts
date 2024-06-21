@@ -1,5 +1,6 @@
 import { Crypto } from '@animo-id/askar-webcrypto'
-import { id_ce_subjectAltName } from '@peculiar/asn1-x509'
+import { AsnParser } from '@peculiar/asn1-schema'
+import { id_ce_subjectAltName, SubjectPublicKeyInfo } from '@peculiar/asn1-x509'
 import * as x509 from '@peculiar/x509'
 import { injectable } from 'tsyringe'
 
@@ -51,13 +52,13 @@ export class X509Certificate {
       ? certificate.publicKey.algorithm.namedCurve
       : certificate.publicKey.algorithm.name
 
-    const publicKey = new Uint8Array(certificate.publicKey.rawData)
+    const publicKey = AsnParser.parse(certificate.publicKey.rawData, SubjectPublicKeyInfo)
     const privateKey = certificate.privateKey ? new Uint8Array(certificate.privateKey.rawData) : undefined
 
     // TODO: remove this and validate properly from webcrypto-core algorithm to keyType of credo
     if (algorithm.toLowerCase() !== 'ecdsa') throw new X509Error(`Expected ECDSA algorithm, received: ${algorithm}`)
 
-    const key = new Key(publicKey, KeyType.P256)
+    const key = new Key(new Uint8Array(publicKey.subjectPublicKey), KeyType.P256)
 
     return new X509Certificate({
       algorithm,

@@ -12,5 +12,7 @@ describe('X509Service', () => {
       sanDnsNames: expect.arrayContaining(['paradym.id', 'wallet.paradym.id', 'animo.id']),
       sanUriNames: expect.arrayContaining(['animo.id']),
     })
+
+    expect(x509Certificate.publicKey.publicKey.length).toStrictEqual(33)
   })
 })
