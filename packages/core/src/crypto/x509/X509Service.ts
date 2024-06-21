@@ -95,6 +95,22 @@ export class X509Certificate {
 
     return subjectAlternativeNameExtensionDns.filter((e) => typeof e === 'string')
   }
+
+  public get sanUriNames() {
+    const subjectAlternativeNameExtensionUri = this.getMatchingExtenstions<string>(id_ce_subjectAltName, 'url')
+
+    if (!subjectAlternativeNameExtensionUri || subjectAlternativeNameExtensionUri.length === 0) {
+      throw new X509Error('No SubjectAlternativeName included in the X.509 certificate with a URI type')
+    }
+
+    if (!subjectAlternativeNameExtensionUri.some((e) => typeof e === 'string')) {
+      throw new X509Error(
+        'SubjectAlternativeName URI was found in the X.509 certificate, but it was not of type string'
+      )
+    }
+
+    return subjectAlternativeNameExtensionUri.filter((e) => typeof e === 'string')
+  }
 }
 
 @injectable()
