@@ -9,6 +9,7 @@ import {
   getKeyFromVerificationMethod,
   getJwkClassFromKeyType,
   SignatureSuiteRegistry,
+  X509Service,
 } from '@credo-ts/core'
 
 /**
@@ -56,8 +57,17 @@ export async function getSphereonSuppliedSignatureFromJwtIssuer(
     alg = _alg
     kid = verificationMethod.id
     did = verificationMethod.controller
+  } else if (jwtIssuer.method === 'x5c') {
+    const x509Service = agentContext.dependencyManager.resolve(X509Service)
+    await x509Service.validateCertificateChain(jwtIssuer.chain)
+
+    const leafCertificate = X509Service.getLeafCertificate(jwtIssuer.chain)
+    alg = leafCertificate.algorithm
+    key = leafCertificate.publicKey
   } else {
-    throw new CredoError(`Unsupported jwt issuer method '${jwtIssuer.method as string}'. Only 'did' is supported.`)
+    throw new CredoError(
+      `Unsupported jwt issuer method '${(jwtIssuer as OpenId4VcJwtIssuer).method}'. Only 'did' is supported.`
+    )
   }
 
   return {

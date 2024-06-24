@@ -1,6 +1,9 @@
 import type { AgentContext } from '../../agent'
 import type { Key, Wallet } from '@credo-ts/core'
 
+import { Crypto } from '@animo-id/askar-webcrypto'
+import * as x509 from '@peculiar/x509'
+
 import { InMemoryWallet } from '../../../../../tests/InMemoryWallet'
 import { getAgentConfig, getAgentContext } from '../../../tests/helpers'
 import { DidKey } from '../../modules/dids'
@@ -51,21 +54,50 @@ describe('JwsService', () => {
     await wallet.delete()
   })
 
-  it('creates a jws for the payload using Ed25519 key', async () => {
-    const payload = JsonEncoder.toBuffer(didJwsz6Mkf.DATA_JSON)
-    const kid = new DidKey(didJwsz6MkfKey).did
+  it('create and verify a jws with a x509 certificate', async () => {
+    const crypto = new Crypto()
+    x509.cryptoProvider.set(crypto)
 
+    const alg = {
+      name: 'ECDSA',
+      namedCurve: 'P-256',
+    }
+
+    const keys = await crypto.subtle.generateKey(alg, true, ['sign', 'verify'])
+    const exportedPrivateKey = await crypto.subtle.exportKey('jwk', keys.privateKey)
+    const privateKey = TypedArrayEncoder.fromBase64(exportedPrivateKey.d)
+
+    const key = await wallet.createKey({ privateKey, keyType: KeyType.P256 })
+
+    const cert = await x509.X509CertificateGenerator.createSelfSigned({
+      serialNumber: '01',
+      name: 'CN=Test',
+      notBefore: new Date('2020/01/01'),
+      notAfter: new Date('2020/01/02'),
+      signingAlgorithm: alg,
+      keys,
+      extensions: [
+        new x509.BasicConstraintsExtension(true, 2, true),
+        new x509.ExtendedKeyUsageExtension(['1.2.3.4.5.6.7', '2.3.4.5.6.7.8'], true),
+        new x509.KeyUsagesExtension(x509.KeyUsageFlags.keyCertSign | x509.KeyUsageFlags.cRLSign, true),
+        await x509.SubjectKeyIdentifierExtension.create(keys.publicKey),
+      ],
+    })
+
+    const payload = { test: 'test' }
     const jws = await jwsService.createJws(agentContext, {
-      payload,
-      key: didJwsz6MkfKey,
-      header: { kid },
+      payload: JsonEncoder.toBuffer(payload),
+      key: key,
+      header: {},
       protectedHeaderOptions: {
-        alg: JwaSignatureAlgorithm.EdDSA,
-        jwk: getJwkFromKey(didJwsz6MkfKey),
+        alg: JwaSignatureAlgorithm.ES256,
+        x5c: [cert.toString('base64')],
       },
     })
 
-    expect(jws).toEqual(didJwsz6Mkf.JWS_JSON)
+    const result = await jwsService.verifyJws(agentContext, { jws })
+    expect(result.isValid).toBe(true)
+    expect(result.jws.payload).toEqual(JsonEncoder.toBase64(payload))
   })
 
   it('creates and verify a jws using ES256 alg and P-256 kty', async () => {

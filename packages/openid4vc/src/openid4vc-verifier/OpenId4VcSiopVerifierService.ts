@@ -34,6 +34,7 @@ import {
   W3cJsonLdVerifiablePresentation,
   Hasher,
   DidsApi,
+  X509Service,
 } from '@credo-ts/core'
 import {
   AuthorizationRequest,
@@ -171,6 +172,7 @@ export class OpenId4VcSiopVerifierService {
     const requestClientId = await authorizationRequest.getMergedProperty<string>('client_id')
     const requestNonce = await authorizationRequest.getMergedProperty<string>('nonce')
     const requestState = await authorizationRequest.getMergedProperty<string>('state')
+
     const presentationDefinitionsWithLocation = await authorizationRequest.getPresentationDefinitions()
 
     if (!requestNonce || !requestClientId || !requestState) {
@@ -391,7 +393,28 @@ export class OpenId4VcSiopVerifierService {
       const suppliedSignature = await getSphereonSuppliedSignatureFromJwtIssuer(agentContext, requestSigner)
       builder.withSignature(suppliedSignature)
 
-      _clientId = suppliedSignature.did
+      if (requestSigner.method === 'x5c') {
+        let clientIdScheme: 'x509_san_dns' | 'x509_san_uri'
+
+        if (!requestSigner.issuer) {
+          throw new CredoError('Issuer must be provided to create x5c certificate protected authorization requests.')
+        }
+
+        const leafCertificate = X509Service.getLeafCertificate(requestSigner.chain)
+        if (leafCertificate.sanDnsNames?.includes(requestSigner.issuer)) {
+          clientIdScheme = 'x509_san_dns'
+        } else if (leafCertificate.sanUriNames?.includes(requestSigner.issuer)) {
+          clientIdScheme = 'x509_san_uri'
+        } else {
+          throw new CredoError('The x5c issuer must be in the SAN-DNS or SAN-URI names of the leaf certificate.')
+        }
+
+        // TODO:
+        // builder.withClientIdScheme(clientIdScheme)
+        _clientId = requestSigner.issuer
+      } else {
+        _clientId = suppliedSignature.did
+      }
     }
 
     if (!_clientId) {

@@ -71,7 +71,7 @@ export class X509Certificate {
     })
   }
 
-  private getMatchingExtenstions<T>(name: string, type: string): Array<T> | undefined {
+  private getMatchingExtensions<T>(name: string, type: string): Array<T> | undefined {
     const extensionsWithName = this.extensions
       ?.filter((e) => e[name])
       ?.flatMap((e) => e[name])
@@ -82,35 +82,13 @@ export class X509Certificate {
   }
 
   public get sanDnsNames() {
-    const subjectAlternativeNameExtensionDns = this.getMatchingExtenstions<string>(id_ce_subjectAltName, 'dns')
-
-    if (!subjectAlternativeNameExtensionDns || subjectAlternativeNameExtensionDns.length === 0) {
-      throw new X509Error('No SubjectAlternativeName included in the X.509 certificate with a dns type')
-    }
-
-    if (!subjectAlternativeNameExtensionDns.some((e) => typeof e === 'string')) {
-      throw new X509Error(
-        'SubjectAlternativeName dns was found in the X.509 certificate, but it was not of type string'
-      )
-    }
-
-    return subjectAlternativeNameExtensionDns.filter((e) => typeof e === 'string')
+    const subjectAlternativeNameExtensionDns = this.getMatchingExtensions<string>(id_ce_subjectAltName, 'dns')
+    return subjectAlternativeNameExtensionDns?.filter((e) => typeof e === 'string')
   }
 
   public get sanUriNames() {
-    const subjectAlternativeNameExtensionUri = this.getMatchingExtenstions<string>(id_ce_subjectAltName, 'url')
-
-    if (!subjectAlternativeNameExtensionUri || subjectAlternativeNameExtensionUri.length === 0) {
-      throw new X509Error('No SubjectAlternativeName included in the X.509 certificate with a URI type')
-    }
-
-    if (!subjectAlternativeNameExtensionUri.some((e) => typeof e === 'string')) {
-      throw new X509Error(
-        'SubjectAlternativeName URI was found in the X.509 certificate, but it was not of type string'
-      )
-    }
-
-    return subjectAlternativeNameExtensionUri.filter((e) => typeof e === 'string')
+    const subjectAlternativeNameExtensionUri = this.getMatchingExtensions<string>(id_ce_subjectAltName, 'url')
+    return subjectAlternativeNameExtensionUri?.filter((e) => typeof e === 'string')
   }
 }
 
@@ -140,5 +118,10 @@ export class X509Service {
    */
   public parseCertificate(encodedCertificate: string): X509Certificate {
     return X509Certificate.fromEncodedCertificate(encodedCertificate)
+  }
+
+  public static getLeafCertificate(certificateChain: Array<string>): X509Certificate {
+    if (certificateChain.length === 0) throw new X509Error('Certificate chain is empty')
+    return X509Certificate.fromEncodedCertificate(certificateChain[0])
   }
 }

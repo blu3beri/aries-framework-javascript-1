@@ -19,6 +19,7 @@ import { uint8ArrayToBase64Url } from '@sd-jwt/utils'
 import { injectable } from 'tsyringe'
 
 import { JwtPayload, Jwk, getJwkFromJson, getJwkFromKey } from '../../crypto'
+import { X509Service } from '../../crypto/x509/X509Service'
 import { CredoError } from '../../error'
 import { TypedArrayEncoder, Hasher, nowInSeconds } from '../../utils'
 import { fetchWithTimeout } from '../../utils/fetch'
@@ -31,7 +32,7 @@ type SdJwtVcConfig = SDJwtVcInstance['userConfig']
 
 export interface SdJwtVc<
   Header extends SdJwtVcHeader = SdJwtVcHeader,
-  Payload extends SdJwtVcPayload = SdJwtVcPayload,
+  Payload extends SdJwtVcPayload = SdJwtVcPayload
 > {
   compact: string
   header: Header
@@ -65,7 +66,6 @@ export interface VerificationResult {
 @injectable()
 export class SdJwtVcService {
   private sdJwtVcRepository: SdJwtVcRepository
-
   public constructor(sdJwtVcRepository: SdJwtVcRepository) {
     this.sdJwtVcRepository = sdJwtVcRepository
   }
@@ -89,6 +89,7 @@ export class SdJwtVcService {
       alg: issuer.alg,
       typ: 'vc+sd-jwt',
       kid: issuer.kid,
+      x5c: issuer.x5c,
     } as const
 
     const sdjwt = new SDJwtVcInstance({
@@ -212,7 +213,8 @@ export class SdJwtVcService {
     } satisfies SdJwtVc<Header, Payload>
 
     try {
-      const issuer = await this.extractKeyFromIssuer(agentContext, this.parseIssuerFromCredential(sdJwtVc))
+      const credentialIssuer = this.parseIssuerFromCredential(agentContext, sdJwtVc)
+      const issuer = await this.extractKeyFromIssuer(agentContext, credentialIssuer)
       const holderBinding = this.parseHolderBindingFromCredential(sdJwtVc)
       const holder = holderBinding ? await this.extractKeyFromHolderBinding(agentContext, holderBinding) : undefined
 
@@ -224,6 +226,10 @@ export class SdJwtVcService {
       const requiredKeys = requiredClaimKeys ? [...requiredClaimKeys, 'vct'] : ['vct']
 
       try {
+        if (issuer.x5c) {
+          const x509Service = agentContext.dependencyManager.resolve(X509Service)
+          await x509Service.validateCertificateChain(issuer.x5c)
+        }
         await sdjwt.verify(compactSdJwtVc, requiredKeys, keyBinding !== undefined)
 
         verificationResult.isSignatureValid = true
@@ -393,31 +399,13 @@ export class SdJwtVcService {
       }
     }
 
-    const validateChain = (chain: Array<string>) => {
-      // TODO: add validation according to RFC 5280
-      // Throw an error when an issue is found
-      // TODO:
-      //   Check whether the first certificate has a `SAN-dns` of the `iss` field
-      //   should this be done in the `verify` method as this is reused between the issue and verify function
-      const certificate = chain[0]
-      if (!certificate) throw new Error('Certificate chain is empty')
-    }
-
-    const parseCertificate = (encodedCertificate: string) => ({
-      algorithm: 'a',
-      key: new Uint8Array(0),
-      issuer: encodedCertificate,
-    })
-
     if (issuer.method === 'x5c') {
-      validateChain(issuer.chain)
-
-      const { algorithm: alg, issuer: iss, key } = parseCertificate(issuer.chain[0])
+      const leafCertificate = X509Service.getLeafCertificate(issuer.chain)
 
       return {
-        alg,
-        key,
-        iss,
+        alg: leafCertificate.algorithm,
+        key: leafCertificate.publicKey,
+        iss: issuer.issuer,
         x5c: issuer.chain,
       }
     }
@@ -426,6 +414,7 @@ export class SdJwtVcService {
   }
 
   private parseIssuerFromCredential<Header extends SdJwtVcHeader, Payload extends SdJwtVcPayload>(
+    agentContext: AgentContext,
     sdJwtVc: SDJwt<Header, Payload>
   ): SdJwtVcIssuer {
     if (!sdJwtVc.jwt?.payload) {
@@ -437,6 +426,34 @@ export class SdJwtVcService {
     }
 
     const iss = sdJwtVc.jwt.payload['iss'] as string
+
+    if (sdJwtVc.jwt.header?.x5c) {
+      if (!Array.isArray(sdJwtVc.jwt.header.x5c)) {
+        throw new SdJwtVcError('Invalid x5c header in credential. Not an array.')
+      }
+      if (sdJwtVc.jwt.header.x5c.length === 0) {
+        throw new SdJwtVcError('Invalid x5c header in credential. Empty array.')
+      }
+      if (sdJwtVc.jwt.header.x5c.some((x5c) => typeof x5c !== 'string')) {
+        throw new SdJwtVcError('Invalid x5c header in credential. Not an array of strings.')
+      }
+
+      const x509Service = agentContext.dependencyManager.resolve(X509Service)
+      const certificate = x509Service.parseCertificate(sdJwtVc.jwt.header.x5c[0])
+
+      // If the iss value contains a DNS name encoded as a URI using the DNS URI scheme [RFC4501], the DNS name MUST match a dNSName Subject Alternative Name (SAN) [RFC5280] entry of the leaf certificate.
+      if (![...(certificate.sanDnsNames ?? []), ...(certificate.sanUriNames ?? [])].includes(iss)) {
+        throw new SdJwtVcError(
+          `The 'iss' claim in the payload does not match the 'SAN-DNS' or 'SAN-URI' names in the x5c certificate. Expected '${iss}'.`
+        )
+      }
+
+      return {
+        method: 'x5c',
+        chain: sdJwtVc.jwt.header.x5c,
+        issuer: iss,
+      }
+    }
 
     if (iss.startsWith('did:')) {
       // If `did` is used, we require a relative KID to be present to identify

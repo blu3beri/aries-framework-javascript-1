@@ -40,13 +40,16 @@ export interface SdJwtVcIssuerX5c {
    * The certificate containing the public key corresponding to the key used to digitally sign the JWS MUST be the first certificate.
    */
   chain: Array<string>
+
+  /**
+   * The issuer of the certificate chain.
+   */
+  issuer: string
 }
 
 // We support jwk and did based binding for the holder at the moment
 export type SdJwtVcHolderBinding = SdJwtVcHolderDidBinding | SdJwtVcHolderJwkBinding
 
-// We only support did based issuance currently, but we might want to add support
-// for x509 or issuer metadata (as defined in SD-JWT VC) in the future
 export type SdJwtVcIssuer = SdJwtVcIssuerDid | SdJwtVcIssuerX5c
 
 export interface SdJwtVcSignOptions<Payload extends SdJwtVcPayload = SdJwtVcPayload> {
