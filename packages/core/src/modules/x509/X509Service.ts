@@ -5,7 +5,6 @@ import type {
   X509CreateCertificateOptions,
 } from './X509ServiceOptions'
 
-import * as x509 from '@peculiar/x509'
 import { injectable } from 'tsyringe'
 
 import { AgentContext } from '../../agent'
@@ -13,6 +12,7 @@ import { CredoWebCrypto } from '../../crypto/webcrypto'
 
 import { X509Certificate } from './X509Certificate'
 import { X509Error } from './X509Error'
+import { Certificate, CertificateChainValidationEngine, ICryptoEngine } from 'pkijs'
 
 @injectable()
 export class X509Service {
@@ -41,48 +41,25 @@ export class X509Service {
     const webCrypto = new CredoWebCrypto(agentContext)
     if (certificateChain.length === 0) throw new X509Error('Certificate chain is empty')
 
-    const parsedLeafCertificate = new x509.X509Certificate(certificate)
+    const engine = new CertificateChainValidationEngine({
+      certs: certificateChain.map((c) => Certificate.fromBER(X509Certificate.fromEncodedCertificate(c).rawCertificate)),
+      trustedCerts: trustedCertificates?.map((c) => Certificate.fromBER(X509Certificate.fromEncodedCertificate(c).rawCertificate)),
+      checkDate: verificationDate
+    })
 
-    const parsedCertificates = certificateChain.map((c) => new x509.X509Certificate(c))
+    console.log({
+      certs: certificateChain.map((c) => X509Certificate.fromEncodedCertificate(c).subject),
+      trustedCertificates: trustedCertificates?.map((c) => X509Certificate.fromEncodedCertificate(c).subject),
+      checkDate: verificationDate
+    })
 
-    const certificateChainBuilder = new x509.X509ChainBuilder({ certificates: parsedCertificates })
+    const chain = await engine.verify({}, webCrypto as unknown as ICryptoEngine)
 
-    const chain = await certificateChainBuilder.build(parsedLeafCertificate, webCrypto)
-
-    // The chain is reversed here as the `x5c` header (the expected input),
-    // has the leaf certificate as the first entry, while the `x509` library expects this as the last
-    let parsedChain = chain.map((c) => X509Certificate.fromRawCertificate(new Uint8Array(c.rawData))).reverse()
-
-    if (parsedChain.length !== certificateChain.length) {
-      throw new X509Error('Could not parse the full chain. Likely due to incorrect ordering')
+    if (!chain.result) {
+      throw new X509Error(chain.resultMessage);
     }
 
-    if (trustedCertificates) {
-      const parsedTrustedCertificates = trustedCertificates.map((trustedCertificate) =>
-        X509Certificate.fromEncodedCertificate(trustedCertificate)
-      )
-
-      const trustedCertificateIndex = parsedChain.findIndex((cert) =>
-        parsedTrustedCertificates.some((tCert) => cert.equal(tCert))
-      )
-
-      if (trustedCertificateIndex === -1) {
-        throw new X509Error('No trusted certificate was found while validating the X.509 chain')
-      }
-
-      // Pop everything off above the index of the trusted as it is not relevant for validation
-      parsedChain = parsedChain.slice(0, trustedCertificateIndex)
-    }
-
-    // Verify the certificate with the publicKey of the certificate above
-    for (let i = 0; i < parsedChain.length; i++) {
-      const cert = parsedChain[i]
-      const previousCertificate = parsedChain[i - 1]
-      const publicKey = previousCertificate ? previousCertificate.publicKey : undefined
-      await cert.verify({ publicKey, verificationDate }, webCrypto)
-    }
-
-    return parsedChain
+    return chain.result
   }
 
   /**
